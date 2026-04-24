@@ -1,0 +1,17 @@
+.DS_Store
+.env
+.env.example
+.data/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+node_modules/
+dist/
+build/
+.coverage
+coverage.xml
+*.egg-info/
+npm-debug.log*
+yarn-error.log*
