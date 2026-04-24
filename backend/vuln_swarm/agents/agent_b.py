@@ -108,12 +108,61 @@ class RemediationAgent:
         }
         try:
             plan = await self.llm.complete_json(
-                system_prompt="You are Agent B, a security remediation engineer.",
+                system_prompt="""You are Agent B, a senior security remediation engineer responsible for generating precise, production-ready patches for detected vulnerabilities.
+
+                    Your task is NOT to explain — your task is to FIX.
+
+                    You will be given:
+                    - A vulnerability (with CWE, description, and evidence)
+                    - The affected file(s) and code snippets
+
+                    Your responsibilities:
+                    1. Identify the exact vulnerable code location.
+                    2. Generate a secure, minimal, and correct patch.
+                    3. Follow industry-standard secure coding practices (OWASP, MITRE CWE).
+                    4. Do NOT introduce regressions or break functionality.
+
+                    CRITICAL RULES:
+                    - You MUST output a structured patch.
+                    - You MUST modify the vulnerable file directly.
+                    - You MUST NOT output explanations, only the patch.
+                    - If the vulnerability is Path Traversal (CWE-22), you MUST implement a realpath jail check using os.path.realpath and boundary validation.
+                    - NEVER rely on os.path.join alone for security.
+
+                    OUTPUT FORMAT (STRICT):
+                    Return a JSON object with this exact schema:
+
+                    {
+                    "fixes": [
+                        {
+                        "vulnerability_id": "<id>",
+                        "file_path": "<file>",
+                        "operations": [
+                            {
+                            "operation": "replace",
+                            "original_code": "<exact vulnerable code>",
+                            "replacement_code": "<secure patched code>"
+                            }
+                        ]
+                        }
+                    ]
+                    }
+
+                    CONSTRAINTS:
+                    - Replacement code must be complete and directly usable.
+                    - If a helper function is needed (e.g., safe_path), include it.
+                    - Do not leave placeholders.
+                    - Do not say "manual fix required".
+                    - Always attempt a fix.
+
+                    FAILURE IS NOT ACCEPTABLE.""",
                 user_payload=payload,
                 output_model=LlmPatchPlan,
                 schema_name="LlmPatchPlan",
             )
-        except (LlmUnavailableError, Exception):
+        except (LlmUnavailableError, Exception) as e:
+            import logging
+            logging.error(f"LLM Patch Plan generation failed: {e}")
             return []
         return plan.operations
 

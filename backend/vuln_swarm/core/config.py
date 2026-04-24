@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import AnyHttpUrl, Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -58,6 +58,17 @@ class Settings(BaseSettings):
     sandbox_memory: str = "512m"
     sandbox_cpus: str = "1.0"
     sandbox_network_disabled: bool = True
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (init_settings, dotenv_settings)
 
     @field_validator("cors_origins", mode="before")
     @classmethod
