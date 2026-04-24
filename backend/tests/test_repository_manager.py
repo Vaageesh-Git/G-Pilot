@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import _test_bootstrap  # noqa: F401
+
 from vuln_swarm.core.config import Settings
 from vuln_swarm.git.repository import RepositoryManager
 

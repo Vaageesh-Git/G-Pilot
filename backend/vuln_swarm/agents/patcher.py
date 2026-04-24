@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import ast
+import configparser
 import copy
+from importlib import metadata
 from pathlib import Path
+import shutil
+import tomllib
 import subprocess
 import sys
 import tempfile
 
+import httpx
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.specifiers import Specifier
+from packaging.version import InvalidVersion, Version
 from pydantic import Field
 
 from vuln_swarm.schemas import AppliedFix, PatchOperation, RagCitation, StrictModel, Vulnerability
@@ -220,58 +228,276 @@ class DeterministicPatchApplier:
         cache_dir.mkdir(parents=True, exist_ok=True)
 
         source_path, cleanup_dir = self._resolve_requirements_source(repo_path, safe_path)
-        command = [
-            self.python_executable,
-            "-m",
-            "piptools",
-            "compile",
-            "--cache-dir",
-            str(cache_dir),
-            "--generate-hashes",
-            "--allow-unsafe",
-            "--output-file",
-            str(safe_path),
-            str(source_path),
-        ]
-
         try:
-            completed = subprocess.run(
-                command,
-                cwd=repo_path,
-                check=False,
-                capture_output=True,
-                text=True,
+            completed = self._compile_requirements(repo_path=repo_path, source_path=source_path, output_path=safe_path, cache_dir=cache_dir)
+            if completed is not None and completed.returncode == 0:
+                regenerated_text = safe_path.read_text(encoding="utf-8", errors="ignore")
+                operations = [
+                    PatchOperation(
+                        file_path=file_path,
+                        operation="replace",
+                        original=safe_path.name,
+                        replacement=f"{safe_path.name} regenerated from {source_path.name} with pinned, hashed dependencies.",
+                        rationale="Compile a fully pinned dependency lockfile with pip-tools and SHA-256 hashes.",
+                        applied=regenerated_text != original_text or bool(regenerated_text.strip()),
+                    )
+                ]
+                notes = f"Regenerated from {source_path.name} using pip-tools."
+                result = (operations, "applied", notes)
+                self._requirements_cache[file_path] = result
+                return [operation.model_copy(deep=True) for operation in operations], "applied", notes
+
+            fallback = self._synthesise_requirements_lockfile(
+                source_path=source_path,
+                output_path=safe_path,
+                original_text=original_text,
+            )
+            if fallback is not None:
+                operations, notes = fallback
+                result = (operations, "applied", notes)
+                self._requirements_cache[file_path] = result
+                return [operation.model_copy(deep=True) for operation in operations], "applied", notes
+
+            stderr = (completed.stderr or completed.stdout or "").strip() if completed is not None else ""
+            truncated = stderr[-600:] if stderr else "pip-tools failed and fallback locking could not infer secure versions."
+            return (
+                [self._manual(file_path, f"Dependency auto-remediation could not build a hashed lockfile: {truncated}")],
+                "manual_required",
+                vulnerability.remediation_hint,
             )
         finally:
             if cleanup_dir is not None:
                 cleanup_dir.cleanup()
 
-        if completed.returncode != 0:
-            stderr = (completed.stderr or completed.stdout or "").strip()
-            truncated = stderr[-600:] if stderr else "pip-tools failed without stderr output."
-            result = (
-                [self._manual(file_path, f"pip-tools failed to compile hashed requirements: {truncated}")],
-                "manual_required",
-                vulnerability.remediation_hint,
+    def _compile_requirements(
+        self,
+        *,
+        repo_path: Path,
+        source_path: Path,
+        output_path: Path,
+        cache_dir: Path,
+    ) -> subprocess.CompletedProcess[str] | None:
+        commands: list[list[str]] = [
+            [
+                self.python_executable,
+                "-m",
+                "piptools",
+                "compile",
+                "--cache-dir",
+                str(cache_dir),
+                "--generate-hashes",
+                "--allow-unsafe",
+                "--output-file",
+                str(output_path),
+                str(source_path),
+            ]
+        ]
+        pip_compile = shutil.which("pip-compile")
+        if pip_compile:
+            commands.append(
+                [
+                    pip_compile,
+                    "--cache-dir",
+                    str(cache_dir),
+                    "--generate-hashes",
+                    "--allow-unsafe",
+                    "--output-file",
+                    str(output_path),
+                    str(source_path),
+                ]
             )
-            self._requirements_cache[file_path] = result
-            return copy.deepcopy(result)
 
-        regenerated_text = safe_path.read_text(encoding="utf-8", errors="ignore")
+        last_result: subprocess.CompletedProcess[str] | None = None
+        for command in commands:
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=repo_path,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+            except FileNotFoundError:
+                continue
+            last_result = completed
+            if completed.returncode == 0:
+                return completed
+        return last_result
+
+    def _synthesise_requirements_lockfile(
+        self,
+        *,
+        source_path: Path,
+        output_path: Path,
+        original_text: str,
+    ) -> tuple[list[PatchOperation], str] | None:
+        dependencies = self._load_dependencies_from_source(source_path)
+        if not dependencies:
+            return None
+
+        locked_entries: list[str] = []
+        resolved_from: list[str] = []
+        for dependency in dependencies:
+            locked_entry, source_label = self._lock_dependency_entry(dependency)
+            if locked_entry is None:
+                return None
+            locked_entries.append(locked_entry)
+            resolved_from.append(source_label)
+
+        lockfile = (
+            "# Generated by Vuln-Swarm fallback dependency locker.\n"
+            "# Prefer pip-compile --generate-hashes when the toolchain is available.\n\n"
+            + "\n".join(locked_entries)
+            + "\n"
+        )
+        output_path.write_text(lockfile, encoding="utf-8")
         operations = [
             PatchOperation(
-                file_path=file_path,
+                file_path=output_path.name,
                 operation="replace",
-                original=safe_path.name,
-                replacement=f"{safe_path.name} regenerated from {source_path.name} with pinned, hashed dependencies.",
-                rationale="Compile a fully pinned dependency lockfile with pip-tools and SHA-256 hashes.",
-                applied=regenerated_text != original_text or bool(regenerated_text.strip()),
+                original=output_path.name,
+                replacement=f"{output_path.name} synthesized from {source_path.name} with pinned versions and SHA-256 hashes.",
+                rationale="Fall back to deterministic PyPI metadata locking when pip-tools is unavailable.",
+                applied=lockfile != original_text,
             )
         ]
-        notes = f"Regenerated from {source_path.name} using pip-tools."
-        result = (operations, "applied", notes)
-        self._requirements_cache[file_path] = result
-        return [operation.model_copy(deep=True) for operation in operations], "applied", notes
+        unique_sources = ", ".join(sorted(set(resolved_from)))
+        return operations, f"Synthesized from {source_path.name} using package metadata resolved via {unique_sources}."
+
+    def _load_dependencies_from_source(self, source_path: Path) -> list[str]:
+        if source_path.suffix == ".toml" and source_path.name == "pyproject.toml":
+            data = tomllib.loads(source_path.read_text(encoding="utf-8", errors="ignore"))
+            project = data.get("project", {})
+            dependencies = project.get("dependencies", [])
+            if isinstance(dependencies, list):
+                return [str(item).strip() for item in dependencies if str(item).strip()]
+            return []
+        if source_path.suffix in {".txt", ".in"}:
+            entries: list[str] = []
+            for raw_line in source_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or line.startswith("-"):
+                    continue
+                entries.append(line)
+            return entries
+        if source_path.suffix == ".cfg":
+            parser = configparser.ConfigParser()
+            parser.read(source_path, encoding="utf-8")
+            install_requires = parser.get("options", "install_requires", fallback="")
+            return [line.strip() for line in install_requires.splitlines() if line.strip()]
+        return []
+
+    def _lock_dependency_entry(self, raw_requirement: str) -> tuple[str | None, str]:
+        try:
+            requirement = Requirement(raw_requirement)
+        except InvalidRequirement:
+            return None, "manual-review"
+        if requirement.url:
+            return None, "manual-review"
+
+        pinned_version = self._extract_exact_pin(requirement)
+        version_source = "declared pin"
+        if pinned_version is None:
+            pinned_version = self._resolve_installed_version(requirement)
+            version_source = "installed metadata"
+        hashes: list[str] = []
+        if pinned_version is not None:
+            hashes = self._fetch_release_hashes(requirement.name, pinned_version)
+        if pinned_version is None or not hashes:
+            resolved = self._resolve_from_pypi(requirement)
+            if resolved is None:
+                return None, version_source
+            pinned_version, hashes = resolved
+            version_source = "PyPI release metadata"
+
+        marker = f"; {requirement.marker}" if requirement.marker else ""
+        line = f"{requirement.name}{self._format_extras(requirement)}=={pinned_version}{marker} \\"
+        hash_lines = [f"    --hash=sha256:{digest}" for digest in hashes]
+        return "\n".join([line, *hash_lines]), version_source
+
+    def _extract_exact_pin(self, requirement: Requirement) -> str | None:
+        for specifier in requirement.specifier:
+            if specifier.operator in {"==", "==="} and "*" not in specifier.version:
+                return specifier.version
+        return None
+
+    def _resolve_installed_version(self, requirement: Requirement) -> str | None:
+        normalized_name = requirement.name.replace("-", "_")
+        try:
+            version = metadata.version(normalized_name)
+        except metadata.PackageNotFoundError:
+            return None
+        return version if self._specifier_allows(requirement.specifier, version) else None
+
+    def _resolve_from_pypi(self, requirement: Requirement) -> tuple[str, list[str]] | None:
+        package_name = requirement.name
+        url = f"https://pypi.org/pypi/{package_name}/json"
+        try:
+            response = httpx.get(url, follow_redirects=True, timeout=10.0)
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+
+        payload = response.json()
+        releases = payload.get("releases", {})
+        candidates: list[Version] = []
+        for raw_version, files in releases.items():
+            if not files:
+                continue
+            try:
+                parsed = Version(raw_version)
+            except InvalidVersion:
+                continue
+            if parsed.is_prerelease:
+                continue
+            if self._specifier_allows(requirement.specifier, raw_version):
+                candidates.append(parsed)
+        if not candidates:
+            return None
+
+        selected = str(max(candidates))
+        hashes = self._hashes_from_release_files(releases.get(selected, []))
+        if not hashes:
+            return None
+        return selected, hashes
+
+    def _fetch_release_hashes(self, package_name: str, version: str) -> list[str]:
+        url = f"https://pypi.org/pypi/{package_name}/{version}/json"
+        try:
+            response = httpx.get(url, follow_redirects=True, timeout=10.0)
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return []
+        payload = response.json()
+        urls = payload.get("urls", [])
+        return self._hashes_from_release_files(urls)
+
+    def _hashes_from_release_files(self, files: list[dict]) -> list[str]:
+        hashes = [
+            file_info.get("digests", {}).get("sha256")
+            for file_info in files
+            if isinstance(file_info, dict)
+        ]
+        return sorted({digest for digest in hashes if digest})[:8]
+
+    def _specifier_allows(self, specifiers, version: str) -> bool:
+        if not specifiers:
+            return True
+        try:
+            parsed = Version(version)
+        except InvalidVersion:
+            return False
+        for specifier in specifiers:
+            if not isinstance(specifier, Specifier):
+                continue
+            if not specifier.contains(parsed, prereleases=False):
+                return False
+        return True
+
+    def _format_extras(self, requirement: Requirement) -> str:
+        if not requirement.extras:
+            return ""
+        return "[" + ",".join(sorted(requirement.extras)) + "]"
 
     def _resolve_requirements_source(
         self,

@@ -1,5 +1,7 @@
 import pytest
 
+import _test_bootstrap  # noqa: F401
+
 from vuln_swarm.core.json_utils import StrictJsonError, validate_agent_json
 from vuln_swarm.schemas import ScanRepoRequest, VulnerabilityReport
 

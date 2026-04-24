@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import _test_bootstrap  # noqa: F401
+
 from vuln_swarm.agents.testing import detect_test_commands
 
 

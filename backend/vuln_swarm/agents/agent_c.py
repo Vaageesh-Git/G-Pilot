@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 
 from vuln_swarm.core.config import Settings
@@ -106,7 +107,12 @@ class ValidationAgent:
         ]
 
     def _feedback(self, residual: list[Vulnerability], fix_report: FixReport) -> str:
-        residual_text = ", ".join(f"{v.vuln_id} in {', '.join(v.affected_files)}" for v in residual)
+        grouped = Counter((v.vuln_id, tuple(v.affected_files)) for v in residual)
+        residual_text = ", ".join(
+            f"{vuln_id} in {', '.join(file_paths)}"
+            + (f" ({count} occurrences)" if count > 1 else "")
+            for (vuln_id, file_paths), count in grouped.items()
+        )
         failed_tests = [test.command for test in fix_report.tests if not test.passed]
         parts = []
         if residual_text:
