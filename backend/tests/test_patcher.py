@@ -5,6 +5,8 @@ import subprocess
 import _test_bootstrap  # noqa: F401
 
 from vuln_swarm.agents.patcher import DeterministicPatchApplier
+from vuln_swarm.core.config import Settings
+from vuln_swarm.scanner.static import StaticAnalyzer
 from vuln_swarm.schemas import Evidence, Severity, Vulnerability
 
 
@@ -172,3 +174,48 @@ dependencies = ["requests"]
     assert "requests==2.32.3" in contents
     assert "--hash=sha256:abc123" in contents
     assert "--hash=sha256:def456" in contents
+
+
+def test_patcher_externalizes_internal_host_defaults_in_javascript(tmp_path: Path) -> None:
+    source = tmp_path / "server.js"
+    source.write_text(
+        """
+app.get("/ping", (req, res) => {
+  const host = req.query.host || "127.0.0.1";
+  return res.json({ host });
+});
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    vulnerability = Vulnerability(
+        id="URL-002-test",
+        vuln_id="URL-002",
+        title="Internal Address Exposed",
+        category="URL",
+        cwe="CWE-200",
+        severity=Severity.medium,
+        description="Internal service address appears in production code.",
+        affected_files=["server.js"],
+        evidence=[
+            Evidence(
+                file_path="server.js",
+                line_start=2,
+                line_end=2,
+                code_excerpt='  const host = req.query.host || "127.0.0.1";',
+                detector="internal-address",
+                confidence=1.0,
+            )
+        ],
+    )
+
+    fix = DeterministicPatchApplier().apply(repo_path=tmp_path, vulnerability=vulnerability, citations=[])
+
+    assert fix.status == "applied"
+    contents = source.read_text(encoding="utf-8")
+    assert 'process.env.DEFAULT_HOST || "example.com"' in contents
+    assert "127.0.0.1" not in contents
+
+    scanner = StaticAnalyzer(Settings(VULN_SWARM_DATA_DIR=str(tmp_path / ".data")))
+    ids = {finding.vuln_id for finding in scanner.scan(tmp_path)}
+    assert "URL-002" not in ids

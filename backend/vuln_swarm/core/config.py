@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Any
 
 from pydantic import AnyHttpUrl, Field, field_validator
@@ -89,8 +90,34 @@ class Settings(BaseSettings):
 
     @property
     def resolved_cors_origins(self) -> list[str]:
-        origins = self.cors_origins or [self.frontend_origin, "http://127.0.0.1:5173"]
-        return [origin for origin in origins if origin != "*"]
+        origins = self.cors_origins or [self.frontend_origin]
+        if self.environment == "development":
+            origins.extend(self._development_cors_origins())
+        return list(dict.fromkeys(origin for origin in origins if origin != "*"))
+
+    def _development_cors_origins(self) -> list[str]:
+        local_origins = [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:5178",
+            "http://127.0.0.1:5178",
+        ]
+
+        try:
+            parsed = urlsplit(self.frontend_origin)
+        except ValueError:
+            return local_origins
+
+        if parsed.scheme in {"http", "https"} and parsed.hostname in {"localhost", "127.0.0.1"}:
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            local_origins.extend(
+                [
+                    f"{parsed.scheme}://localhost:{port}",
+                    f"{parsed.scheme}://127.0.0.1:{port}",
+                ]
+            )
+
+        return local_origins
 
     def ensure_directories(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)

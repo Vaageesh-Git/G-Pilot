@@ -5,6 +5,7 @@ import configparser
 import copy
 from importlib import metadata
 from pathlib import Path
+import re
 import shutil
 import tomllib
 import subprocess
@@ -23,6 +24,12 @@ from vuln_swarm.schemas import AppliedFix, PatchOperation, RagCitation, StrictMo
 class LlmPatchPlan(StrictModel):
     operations: list[PatchOperation] = Field(default_factory=list)
     summary: str
+
+
+INTERNAL_ADDRESS_PATTERN = re.compile(
+    r"(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}|127\.0\.0\.1|localhost)"
+)
+STRING_LITERAL_PATTERN = re.compile(r"(?P<quote>[\"'])(?P<value>[^\"']*)(?P=quote)")
 
 
 class DeterministicPatchApplier:
@@ -61,6 +68,9 @@ class DeterministicPatchApplier:
                 alternate_replacement='"http://localhost:5173"',
             )
             strategy = "restrict-cors-origin"
+        elif vulnerability.vuln_id == "URL-002":
+            operations, status, notes = self._patch_internal_address_exposure(repo_path, vulnerability)
+            strategy = "externalize-internal-address"
         elif vulnerability.vuln_id in {"DEP-003", "DEP-004"}:
             operations, status, notes = self._patch_requirements_lockfile(repo_path, vulnerability)
             strategy = "piptools-compile-hashes"
@@ -203,6 +213,118 @@ class DeterministicPatchApplier:
             ], "applied"
         return [self._manual(file_path, "Pattern was not found for deterministic replacement.")], "manual_required"
 
+    def _patch_internal_address_exposure(
+        self,
+        repo_path: Path,
+        vulnerability: Vulnerability,
+    ) -> tuple[list[PatchOperation], str, str | None]:
+        file_path = vulnerability.affected_files[0] if vulnerability.affected_files else ""
+        safe_path = self._safe_path(repo_path, file_path)
+        text = safe_path.read_text(encoding="utf-8", errors="ignore")
+        target_line = self._find_internal_address_line(text, vulnerability)
+        if target_line is None:
+            return [self._manual(file_path, "No internal address literal found at patch time.")], "manual_required", vulnerability.remediation_hint
+
+        suffix = safe_path.suffix.lower()
+        if suffix in {".js", ".jsx", ".ts", ".tsx"}:
+            replacement_line, env_var = self._rewrite_internal_address_for_javascript(target_line)
+            updated_text = text.replace(target_line, replacement_line, 1)
+        elif suffix == ".py":
+            replacement_line, env_var = self._rewrite_internal_address_for_python(target_line)
+            updated_text = text.replace(target_line, replacement_line, 1)
+            updated_text = self._ensure_python_import(updated_text, "import os")
+        else:
+            return [self._manual(file_path, "Internal address auto-remediation currently supports JS/TS and Python files.")], "manual_required", vulnerability.remediation_hint
+
+        if replacement_line == target_line:
+            return [self._manual(file_path, "Could not derive a safe environment-backed replacement for the internal address literal.")], "manual_required", vulnerability.remediation_hint
+
+        safe_path.write_text(updated_text, encoding="utf-8")
+        notes = f"Removed internal address literal; configure {env_var} in deployment if a custom target is required."
+        return [
+            PatchOperation(
+                file_path=file_path,
+                operation="replace",
+                original=target_line,
+                replacement=replacement_line,
+                rationale="Move internal network defaults into deployment configuration and keep only public-safe fallback values in source.",
+                applied=True,
+            )
+        ], "applied", notes
+
+    def _find_internal_address_line(self, text: str, vulnerability: Vulnerability) -> str | None:
+        for evidence in vulnerability.evidence:
+            if evidence.code_excerpt and evidence.code_excerpt in text:
+                return evidence.code_excerpt
+        for line in text.splitlines():
+            if INTERNAL_ADDRESS_PATTERN.search(line):
+                return line
+        return None
+
+    def _rewrite_internal_address_for_javascript(self, line: str) -> tuple[str, str]:
+        return self._rewrite_internal_address_line(
+            line,
+            assignment_pattern=r"^\s*(?:(?:const|let|var)\s+)?(?P<name>[A-Za-z_$][\w$]*)\s*=",
+            env_builder=lambda env_var, fallback: f'process.env.{env_var} || "{fallback}"',
+        )
+
+    def _rewrite_internal_address_for_python(self, line: str) -> tuple[str, str]:
+        return self._rewrite_internal_address_line(
+            line,
+            assignment_pattern=r"^\s*(?P<name>[A-Za-z_]\w*)\s*=",
+            env_builder=lambda env_var, fallback: f'os.getenv("{env_var}", "{fallback}")',
+        )
+
+    def _rewrite_internal_address_line(
+        self,
+        line: str,
+        *,
+        assignment_pattern: str,
+        env_builder,
+    ) -> tuple[str, str]:
+        assignment = re.search(assignment_pattern, line)
+        variable_name = assignment.group("name") if assignment else "service"
+        literal = None
+        literal_value = None
+        for match in STRING_LITERAL_PATTERN.finditer(line):
+            value = match.group("value")
+            if INTERNAL_ADDRESS_PATTERN.search(value):
+                literal = match.group(0)
+                literal_value = value
+                break
+        if literal is None or literal_value is None:
+            return line, self._env_var_name(variable_name, is_url=False)
+
+        is_url = "://" in literal_value or "/" in literal_value
+        env_var = self._env_var_name(variable_name, is_url=is_url)
+        fallback = "https://example.com" if is_url else "example.com"
+        replacement_expr = env_builder(env_var, fallback)
+        return line.replace(literal, replacement_expr, 1), env_var
+
+    def _env_var_name(self, variable_name: str, *, is_url: bool) -> str:
+        normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", variable_name)
+        normalized = re.sub(r"[^A-Za-z0-9]+", "_", normalized).strip("_").upper() or "SERVICE"
+        if is_url:
+            suffix = "URL"
+        else:
+            suffix = "HOST"
+        if not normalized.endswith(suffix):
+            normalized = f"{normalized}_{suffix}"
+        return f"DEFAULT_{normalized}"
+
+    def _ensure_python_import(self, text: str, statement: str) -> str:
+        if statement in text:
+            return text
+
+        lines = text.splitlines()
+        insert_at = 0
+        if lines and lines[0].startswith("#!"):
+            insert_at = 1
+        while insert_at < len(lines) and lines[insert_at].startswith(("from __future__ import ", "#")):
+            insert_at += 1
+        lines.insert(insert_at, statement)
+        return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+
     def _patch_requirements_lockfile(
         self,
         repo_path: Path,
@@ -224,8 +346,8 @@ class DeterministicPatchApplier:
             return copy.deepcopy(result)
 
         original_text = safe_path.read_text(encoding="utf-8", errors="ignore")
-        cache_dir = repo_path / ".vuln-swarm-cache" / "pip-tools"
-        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_root = tempfile.TemporaryDirectory(prefix="vuln-swarm-pip-tools-")
+        cache_dir = Path(cache_root.name)
 
         source_path, cleanup_dir = self._resolve_requirements_source(repo_path, safe_path)
         try:
@@ -266,6 +388,7 @@ class DeterministicPatchApplier:
                 vulnerability.remediation_hint,
             )
         finally:
+            cache_root.cleanup()
             if cleanup_dir is not None:
                 cleanup_dir.cleanup()
 

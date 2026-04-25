@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import re
 import subprocess
 from pathlib import Path
@@ -123,7 +124,26 @@ class GitHubIntegrator:
         *,
         allow_failure: bool = False,
     ) -> subprocess.CompletedProcess[str]:
-        result = subprocess.run(["git", *args], cwd=repo_path, capture_output=True, text=True, check=False)
+        result = subprocess.run(
+            self._git_command(args),
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         if result.returncode != 0 and not allow_failure:
             raise GitHubIntegrationError(result.stderr.strip() or f"git {' '.join(args)} failed")
         return result
+
+    def _git_command(self, args: list[str]) -> list[str]:
+        command = ["git"]
+        if self.settings.github_token:
+            auth = base64.b64encode(f"x-access-token:{self.settings.github_token}".encode()).decode()
+            command.extend(
+                [
+                    "-c",
+                    f"http.https://github.com/.extraheader=AUTHORIZATION: basic {auth}",
+                ]
+            )
+        command.extend(args)
+        return command

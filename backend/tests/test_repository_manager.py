@@ -34,6 +34,7 @@ def test_clone_command_uses_github_token_for_github_https_urls(tmp_path: Path) -
 
 def test_clone_command_skips_auth_header_without_token(tmp_path: Path) -> None:
     settings = Settings(
+        GITHUB_TOKEN="",
         VULN_SWARM_DATA_DIR=str(tmp_path / ".data"),
         CHROMA_DIR=str(tmp_path / ".data" / "chroma"),
     )
