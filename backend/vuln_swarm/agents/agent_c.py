@@ -41,6 +41,7 @@ class ValidationAgent:
         create_pr: bool,
         github_repository: str,
         base_branch: str | None,
+        fork_owner: str | None = None,
     ) -> ValidationReport:
         rescanned = self.scanner.scan(repo_path)
         residual = self._match_residual(original_report.vulnerabilities, rescanned)
@@ -64,6 +65,7 @@ class ValidationAgent:
                     base_branch=base_branch,
                     title=f"Fix security findings from Vuln-Swarm run {run_id[:8]}",
                     body=build_pr_body(original_report, fix_report),
+                    fork_owner=fork_owner,
                 )
             except GitHubIntegrationError as exc:
                 feedback = f"Fix validated, but PR automation failed: {exc}"

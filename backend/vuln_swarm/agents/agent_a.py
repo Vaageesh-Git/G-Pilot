@@ -5,7 +5,7 @@ from pathlib import Path
 
 from vuln_swarm.agents.exploits import build_exploit_script
 from vuln_swarm.core.config import Settings
-from vuln_swarm.core.llm import GroqJsonClient, LlmUnavailableError
+from vuln_swarm.core.llm import GeminiJsonClient, LlmUnavailableError
 from vuln_swarm.rag.vector_store import ChromaKnowledgeBase
 from vuln_swarm.sandbox.docker_runner import DockerSandbox
 from vuln_swarm.scanner.static import StaticAnalyzer
@@ -20,7 +20,7 @@ class OffensiveSecurityAgent:
         scanner: StaticAnalyzer,
         knowledge_base: ChromaKnowledgeBase,
         sandbox: DockerSandbox,
-        llm: GroqJsonClient,
+        llm: GeminiJsonClient,
     ):
         self.settings = settings
         self.scanner = scanner

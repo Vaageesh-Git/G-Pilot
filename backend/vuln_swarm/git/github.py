@@ -26,6 +26,7 @@ class GitHubIntegrator:
         base_branch: str | None,
         title: str,
         body: str,
+        fork_owner: str | None = None,
     ) -> str | None:
         if not self.settings.github_token:
             raise GitHubIntegrationError("GITHUB_TOKEN is required for PR automation")
@@ -40,7 +41,28 @@ class GitHubIntegrator:
             return None
         self._git(repo_path, ["commit", "-m", title])
         self._git(repo_path, ["push", "origin", branch_name, "--force-with-lease"])
-        return await self._create_pr(repository=repository, head=branch_name, base=base, title=title, body=body)
+        pr_head = f"{fork_owner}:{branch_name}" if fork_owner else branch_name
+        return await self._create_pr(repository=repository, head=pr_head, base=base, title=title, body=body)
+
+    async def create_fork(self, repository: str) -> tuple[str, str]:
+        if not self.settings.github_token:
+            raise GitHubIntegrationError("GITHUB_TOKEN is required for forking automation")
+        url = f"https://api.github.com/repos/{repository}/forks"
+        headers = self._headers()
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(url, headers=headers)
+            response.raise_for_status()
+            payload = response.json()
+            fork_full_name = payload["full_name"]
+            fork_owner = payload["owner"]["login"]
+            
+            import asyncio
+            for _ in range(15):
+                check = await client.get(f"https://api.github.com/repos/{fork_full_name}", headers=headers)
+                if check.status_code == 200:
+                    break
+                await asyncio.sleep(2)
+        return fork_full_name, fork_owner
 
     async def create_issue(self, *, repository: str, title: str, body: str) -> str:
         if not self.settings.github_token:

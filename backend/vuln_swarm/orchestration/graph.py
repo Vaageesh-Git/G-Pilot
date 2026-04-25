@@ -91,6 +91,7 @@ class SwarmGraph:
             create_pr=request.create_pr,
             github_repository=request.github_repository,
             base_branch=request.base_branch,
+            fork_owner=request.fork_owner,
         )
         next_retry_count = retry_count if report.fixed else retry_count + 1
         await self._trace(

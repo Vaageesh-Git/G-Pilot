@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
+from typing import Any
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from vuln_swarm.api.dependencies import get_runner, get_store, settings_dependency
@@ -62,6 +63,43 @@ def create_app() -> FastAPI:
             status_url=f"/status/{record.id}",
             report_url=f"/report/{record.id}",
         )
+
+    @app.post("/webhook/github", status_code=202)
+    async def github_webhook(
+        request: Request,
+        background_tasks: BackgroundTasks,
+        store: JobStore = Depends(get_store),
+        runner: PipelineRunner = Depends(get_runner),
+    ) -> Any:
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+            
+        event_type = request.headers.get("X-GitHub-Event", "push")
+        
+        if event_type == "ping":
+            return {"status": "ok", "message": "pong"}
+
+        if event_type != "push":
+            raise HTTPException(status_code=400, detail=f"Only push and ping events are supported, got {event_type}")
+
+        repo_full_name = payload.get("repository", {}).get("full_name")
+        if not repo_full_name:
+            raise HTTPException(status_code=400, detail="Missing repository full_name in payload")
+
+        commit_sha = payload.get("after")
+        ref = payload.get("ref", "")
+        branch = ref.replace("refs/heads/", "") if ref.startswith("refs/heads/") else None
+
+        scan_req = ScanRepoRequest(
+            github_repository=repo_full_name,
+            commit_sha=commit_sha,
+            branch=branch,
+            create_pr=True,
+            metadata={"webhook": True, "event": event_type}
+        )
+        return await scan_repo(scan_req, background_tasks, store, runner)
 
     @app.get("/status/{job_id}", response_model=PipelineStatus)
     async def status(job_id: str, store: JobStore = Depends(get_store)) -> PipelineStatus:

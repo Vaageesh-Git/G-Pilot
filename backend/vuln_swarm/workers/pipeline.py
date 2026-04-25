@@ -7,7 +7,7 @@ from vuln_swarm.agents.agent_a import OffensiveSecurityAgent
 from vuln_swarm.agents.agent_b import RemediationAgent
 from vuln_swarm.agents.agent_c import ValidationAgent
 from vuln_swarm.core.config import Settings
-from vuln_swarm.core.llm import GroqJsonClient
+from vuln_swarm.core.llm import GeminiJsonClient
 from vuln_swarm.core.logging import get_logger
 from vuln_swarm.git.github import GitHubIntegrator
 from vuln_swarm.git.repository import RepositoryManager
@@ -29,7 +29,7 @@ class PipelineRunner:
         self.knowledge_base = ChromaKnowledgeBase(settings, base_dir=Path(__file__).resolve().parents[3])
         self.scanner = StaticAnalyzer(settings)
         self.sandbox = DockerSandbox(settings)
-        self.llm = GroqJsonClient(settings)
+        self.llm = GeminiJsonClient(settings)
         self.github = GitHubIntegrator(settings)
 
     async def run(self, job_id: str) -> None:
@@ -41,6 +41,16 @@ class PipelineRunner:
                 status=JobStatus.running,
                 current_step="prepare",
             )
+
+            if record.request.create_pr:
+                forked_repo, fork_owner = await self.github.create_fork(record.request.github_repository)
+                record.request.forked_repository = forked_repo
+                record.request.fork_owner = fork_owner
+                self.store.update(job_id, lambda item: (
+                    setattr(item.request, "forked_repository", forked_repo),
+                    setattr(item.request, "fork_owner", fork_owner),
+                ))
+
             repo_path = self.repository_manager.prepare(job_id, record.request)
             commit_sha = self.repository_manager.commit_sha(repo_path) or record.request.commit_sha
             self.store.update(

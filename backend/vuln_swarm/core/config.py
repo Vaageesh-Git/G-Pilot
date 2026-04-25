@@ -38,12 +38,12 @@ class Settings(BaseSettings):
     )
     retrieval_top_k: int = Field(default=4, alias="RETRIEVAL_TOP_K")
 
-    groq_api_key: str | None = Field(default=None, alias="GROQ_API_KEY")
-    groq_model: str = Field(default="llama-3.3-70b-versatile", alias="GROQ_MODEL")
-    groq_temperature: float = Field(default=0.2, alias="GROQ_TEMPERATURE")
-    groq_base_url: AnyHttpUrl = "https://api.groq.com/openai/v1/chat/completions"
-    groq_timeout_seconds: float = 60.0
-    groq_max_tokens: int = 4096
+    gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
+    gemini_model: str = Field(default="gemini-3-flash-preview", alias="GEMINI_MODEL")
+    gemini_temperature: float = Field(default=0.2, alias="GEMINI_TEMPERATURE")
+    gemini_base_url: AnyHttpUrl = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    gemini_timeout_seconds: float = 60.0
+    gemini_max_tokens: int = 4096
 
     github_token: str | None = Field(default=None, alias="GITHUB_TOKEN")
     github_default_base_branch: str = Field(default="main", alias="GITHUB_DEFAULT_BASE_BRANCH")

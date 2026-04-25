@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from typing import Any
 from vuln_swarm.agents.patcher import DeterministicPatchApplier, LlmPatchPlan
 from vuln_swarm.agents.testing import detect_test_commands
 from vuln_swarm.core.config import Settings
-from vuln_swarm.core.llm import GroqJsonClient, LlmUnavailableError
+from vuln_swarm.core.llm import GeminiJsonClient, LlmUnavailableError
 from vuln_swarm.rag.vector_store import ChromaKnowledgeBase
 from vuln_swarm.sandbox.docker_runner import DockerSandbox
 from vuln_swarm.schemas import AppliedFix, FixReport, PatchOperation, TestResult, VulnerabilityReport
@@ -19,7 +20,7 @@ class RemediationAgent:
         settings: Settings,
         knowledge_base: ChromaKnowledgeBase,
         sandbox: DockerSandbox,
-        llm: GroqJsonClient,
+        llm: GeminiJsonClient,
     ):
         self.settings = settings
         self.knowledge_base = knowledge_base
@@ -89,15 +90,25 @@ class RemediationAgent:
             summary=f"Applied {applied_count} deterministic or LLM-guided fix groups; {len(manual_fixes)} required escalation.",
         )
 
+    def _truncate_strings(self, data: Any, max_len: int = 4000) -> Any:
+        if isinstance(data, dict):
+            return {k: self._truncate_strings(v, max_len) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [self._truncate_strings(i, max_len) for i in data]
+        elif isinstance(data, str) and len(data) > max_len:
+            return data[: max_len // 2] + "\n...[TRUNCATED]...\n" + data[-max_len // 2 :]
+        return data
+
     async def _plan_llm_operations(
         self,
         report: VulnerabilityReport,
         manual_fixes: list[AppliedFix],
         feedback: str | None,
     ) -> list[PatchOperation]:
-        payload = {
-            "vulnerability_report": report.model_dump(mode="json"),
-            "manual_fix_groups": [fix.model_dump(mode="json") for fix in manual_fixes],
+        manual_vuln_ids = {fix.vulnerability_id for fix in manual_fixes}
+        filtered_vulns = [v.model_dump(mode="json") for v in report.vulnerabilities if v.vuln_id in manual_vuln_ids]
+        raw_payload = {
+            "vulnerabilities_to_fix": filtered_vulns,
             "validator_feedback": feedback,
             "constraints": [
                 "Return exact original/replacement snippets only.",
@@ -106,6 +117,8 @@ class RemediationAgent:
                 "Mark operation as manual_required if exact replacement cannot be guaranteed.",
             ],
         }
+        payload = self._truncate_strings(raw_payload, max_len=1000)
+
         try:
             plan = await self.llm.complete_json(
                 system_prompt="""You are Agent B, a senior security remediation engineer responsible for generating precise, production-ready patches for detected vulnerabilities.
@@ -126,6 +139,8 @@ class RemediationAgent:
                     - You MUST output a structured patch.
                     - You MUST modify the vulnerable file directly.
                     - You MUST NOT output explanations, only the patch.
+                    - The "original" field in your output MUST exactly match code found inside the "evidence" array of the vulnerability.
+                    - NEVER use code found in "rag_citations" as your "original" text. Citations are strictly for guidance, not direct string replacement.
                     - If the vulnerability is Path Traversal (CWE-22), you MUST implement a realpath jail check using os.path.realpath and boundary validation.
                     - NEVER rely on os.path.join alone for security.
 
@@ -133,17 +148,14 @@ class RemediationAgent:
                     Return a JSON object with this exact schema:
 
                     {
-                    "fixes": [
+                    "summary": "<a short 1-sentence summary of the fixes applied>",
+                    "operations": [
                         {
-                        "vulnerability_id": "<id>",
-                        "file_path": "<file>",
-                        "operations": [
-                            {
-                            "operation": "replace",
-                            "original_code": "<exact vulnerable code>",
-                            "replacement_code": "<secure patched code>"
-                            }
-                        ]
+                        "file_path": "<exact file path>",
+                        "operation": "replace",
+                        "original": "<exact vulnerable code line(s)>",
+                        "replacement": "<secure patched code>",
+                        "rationale": "<why this fix is secure>"
                         }
                     ]
                     }
@@ -174,10 +186,10 @@ class RemediationAgent:
             AppliedFix(
                 vulnerability_id="llm-planned",
                 file_path=file_path,
-                strategy="groq-exact-patch-plan",
+                strategy="gemini-exact-patch-plan",
                 operations=file_operations,
                 status="applied" if any(operation.applied for operation in file_operations) else "manual_required",
-                notes="Patch operations generated in a single Groq call for cost control.",
+                notes="Patch operations generated in a single Gemini call for cost control.",
             )
             for file_path, file_operations in grouped.items()
         ]

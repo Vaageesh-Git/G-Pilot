@@ -17,15 +17,15 @@ class LlmUnavailableError(RuntimeError):
     pass
 
 
-class GroqJsonClient:
-    """Small OpenAI-compatible Groq client optimized for strict JSON agent contracts."""
+class GeminiJsonClient:
+    """Small OpenAI-compatible Gemini client optimized for strict JSON agent contracts."""
 
     def __init__(self, settings: Settings):
         self.settings = settings
 
     @property
     def enabled(self) -> bool:
-        return bool(self.settings.groq_api_key)
+        return bool(self.settings.gemini_api_key)
 
     async def complete_json(
         self,
@@ -35,8 +35,8 @@ class GroqJsonClient:
         output_model: type[ModelT],
         schema_name: str,
     ) -> ModelT:
-        if not self.settings.groq_api_key:
-            raise LlmUnavailableError("GROQ_API_KEY is not configured")
+        if not self.settings.gemini_api_key:
+            raise LlmUnavailableError("GEMINI_API_KEY is not configured")
 
         schema = output_model.model_json_schema()
         messages = [
@@ -59,24 +59,29 @@ class GroqJsonClient:
 
     @retry(
         reraise=True,
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=8),
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException)),
     )
     async def _post(self, messages: list[dict[str, str]]) -> str:
+        import random
+        
+        api_keys = [k.strip() for k in self.settings.gemini_api_key.split(",") if k.strip()]
+        selected_key = random.choice(api_keys)
+
         headers = {
-            "Authorization": f"Bearer {self.settings.groq_api_key}",
+            "Authorization": f"Bearer {selected_key}",
             "Content-Type": "application/json",
         }
         body = {
-            "model": self.settings.groq_model,
-            "temperature": self.settings.groq_temperature,
-            "max_tokens": self.settings.groq_max_tokens,
+            "model": self.settings.gemini_model,
+            "temperature": self.settings.gemini_temperature,
+            "max_tokens": self.settings.gemini_max_tokens,
             "response_format": {"type": "json_object"},
             "messages": messages,
         }
-        async with httpx.AsyncClient(timeout=self.settings.groq_timeout_seconds) as client:
-            response = await client.post(str(self.settings.groq_base_url), headers=headers, json=body)
+        async with httpx.AsyncClient(timeout=self.settings.gemini_timeout_seconds) as client:
+            response = await client.post(str(self.settings.gemini_base_url), headers=headers, json=body)
             response.raise_for_status()
             payload = response.json()
         return payload["choices"][0]["message"]["content"]

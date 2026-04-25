@@ -71,7 +71,7 @@ class DeterministicPatchApplier:
                     operation="manual_required",
                     rationale=(
                         "No deterministic patcher is registered for this vulnerability class. "
-                        "The Groq patch planner can produce exact replacements when configured."
+                        "The Gemini patch planner can produce exact replacements when configured."
                     ),
                 )
             )

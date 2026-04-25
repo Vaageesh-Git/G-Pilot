@@ -171,6 +171,8 @@ class ScanRepoRequest(StrictModel):
     full_scan: bool = True
     max_retry_count: int | None = Field(default=None, ge=0, le=10)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    forked_repository: str | None = None
+    fork_owner: str | None = None
 
     @field_validator("github_repository")
     @classmethod
@@ -185,6 +187,8 @@ class ScanRepoRequest(StrictModel):
 
     @property
     def clone_url(self) -> str:
+        if self.forked_repository:
+            return f"https://github.com/{self.forked_repository}.git"
         return f"https://github.com/{self.github_repository}.git"
 
 

@@ -21,7 +21,17 @@ class RepositoryManager:
         destination.parent.mkdir(parents=True, exist_ok=True)
         if destination.exists():
             return destination
+            
         self._clone(request.clone_url, destination, branch=request.branch)
+        
+        if request.forked_repository and request.forked_repository != request.github_repository:
+            upstream_url = f"https://github.com/{request.github_repository}.git"
+            self._git(destination, ["remote", "add", "upstream", upstream_url])
+            if request.commit_sha:
+                self._git(destination, ["fetch", "upstream", request.commit_sha])
+            else:
+                self._git(destination, ["fetch", "upstream", request.branch or "main"])
+                
         if request.commit_sha:
             self._git(destination, ["checkout", request.commit_sha])
         return destination
