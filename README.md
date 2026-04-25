@@ -1,6 +1,12 @@
 # Vuln-Swarm
 
-> **Core element: GitHub webhook on the testing repository.** A webhook is an HTTP callback from GitHub. When code is pushed to the testing repo, GitHub sends a `push` event to `POST https://vuln-swarm-850247898326.asia-south1.run.app/webhook/github`, and Vuln-Swarm automatically starts a scan for that exact repository, branch, and commit. We use this flow so testing is automatic, tied to real code changes, and ready to create a remediation PR without requiring a manual API call for every run.
+> **Core element: GitHub webhook on the testing repository. A webhook is an HTTP callback from GitHub. When code is pushed to the testing repo, GitHub sends a `push` event to `POST /webhook/github`
+, and Vuln-Swarm automatically starts a scan for that exact repository, branch, and commit. We use this flow so testing is automatic, tied to real code changes, and ready to create a remediation PR without requiring a manual API call for every run.** 
+
+```bash
+https://vuln-swarm-850247898326.asia-south1.run.app/webhook/github
+```
+
 
 Vuln-Swarm is a full-stack, multi-agent security automation system that scans GitHub repositories, validates findings in an isolated Docker sandbox, applies remediation, and re-tests the result before optionally opening a pull request.
 
