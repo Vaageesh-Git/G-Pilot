@@ -17,7 +17,7 @@ Agent A creates sandbox probes from known vulnerability classes and runs them in
 - RAG retrieval is local ChromaDB plus local sentence-transformer embeddings.
 - Agent A uses deterministic scanners before any LLM call.
 - Agent B uses deterministic AST-aware patchers first.
-- Groq patch planning is batched into a single structured JSON call for unresolved findings.
+- Gemini patch planning is batched into a single structured JSON call for unresolved findings.
 - Status and report reads never call the LLM.
 
 ## GitHub Automation

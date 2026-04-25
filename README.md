@@ -1,22 +1,63 @@
 # Vuln-Swarm
 
-Production-oriented multi-agent security automation system for detecting, validating, fixing, and re-validating software vulnerabilities.
+Vuln-Swarm is a full-stack, multi-agent security automation system that scans GitHub repositories, validates findings in an isolated Docker sandbox, applies remediation, and re-tests the result before optionally opening a pull request.
 
-## Architecture
+## Highlights
 
-- **Backend:** FastAPI
-- **Orchestration:** LangGraph cyclic state graph
-- **Vector DB:** ChromaDB with `vulnerabilities`, `exploits`, and `fixes` collections
-- **Embeddings:** `sentence-transformers`
-- **LLM:** Groq `llama-3.3-70b-versatile`, temperature `0.2`
-- **Execution:** Docker sandbox with network disabled by default
-- **Git:** branch, commit, push, and GitHub PR automation
-- **Frontend:** React dashboard
+- FastAPI backend that runs a cyclic Agent A -> Agent B -> Agent C pipeline with LangGraph
+- React dashboard for launching scans and reviewing findings, fixes, validation, and trace data
+- Chroma-backed RAG layer seeded from the bundled PDF knowledge base and optional `knowledge/` documents
+- Docker-isolated exploit and validation steps with conservative defaults
+- GitHub webhook and PR automation for authorized repositories
 
-## Quick Start
+## Tech Stack
+
+- Backend: FastAPI, Pydantic v2, LangGraph, ChromaDB, `sentence-transformers`
+- Frontend: React 18, Vite, `lucide-react`
+- LLM integration: Gemini-compatible structured JSON client
+- Automation: Docker sandboxing, GitHub API integration
+
+## Repository Layout
+
+```text
+.
+├── backend/                 # API, agents, orchestration, storage, tests
+├── frontend/                # React dashboard
+├── docs/                    # Architecture, API, and security notes
+├── scripts/                 # Small local run helpers
+├── docker-compose.yml       # Full-stack local environment
+├── Vurnabilities .pdf
+└── Vurnabilities Solutions.pdf
+```
+
+## Prerequisites
+
+- Python 3.11+
+- Node.js 18+
+- Docker
+- A Gemini API key if you want LLM-assisted remediation
+- A GitHub token if you want forking or PR creation
+
+## Environment Setup
+
+Create a local env file from the template:
 
 ```bash
 cp .env.example .env
+```
+
+Most important variables:
+
+- `GEMINI_API_KEY`: enables Gemini-backed structured agent responses
+- `GITHUB_TOKEN`: required for fork and PR automation
+- `VULN_SWARM_DATA_DIR`: overrides where runs and Chroma data are stored
+- `FRONTEND_ORIGIN`: frontend URL allowed by the backend CORS config
+
+## Local Development
+
+Start the backend:
+
+```bash
 cd backend
 python -m venv .venv
 source .venv/bin/activate
@@ -24,7 +65,7 @@ pip install -e ".[dev]"
 uvicorn vuln_swarm.api.app:app --reload --port 8000
 ```
 
-In another terminal:
+Start the frontend in another terminal:
 
 ```bash
 cd frontend
@@ -34,43 +75,72 @@ npm run dev
 
 Open `http://localhost:5173`.
 
-## Required Environment
+You can also use the helper scripts:
 
-- `GROQ_API_KEY`: Groq API key for structured agent calls.
-- `GITHUB_TOKEN`: GitHub user, bot, or GitHub App installation token with access to the target repos. Required only when `create_pr=true`.
-- `VULN_SWARM_DATA_DIR`: optional data directory, defaults to `.data`.
+```bash
+./scripts/run_backend.sh
+./scripts/run_frontend.sh
+```
 
-## API
+## Docker Compose
 
-- `POST /scan-repo`: starts the Agent A -> B -> C pipeline.
-- `GET /status/{id}`: returns job status and trace summary.
-- `GET /report/{id}`: returns the latest strict JSON reports.
-- `POST /retry/{id}`: retries failed or unfixed runs.
+To run the full stack with Docker:
 
-`POST /scan-repo` now uses GitHub-only targeting. Provide `github_repository` in `owner/repo` form plus optional `branch`, `commit_sha`, and `base_branch`.
+```bash
+docker compose up --build
+```
+
+The compose setup exposes:
+
+- frontend at `http://localhost:5173`
+- backend at `http://localhost:8000`
+
+## API Overview
+
+- `GET /health`: simple service health check
+- `POST /scan-repo`: enqueue a GitHub repository scan
+- `POST /webhook/github`: accept GitHub `push` and `ping` events
+- `GET /status/{job_id}`: inspect pipeline status and trace events
+- `GET /report/{job_id}`: fetch the structured scan, fix, and validation reports
+- `POST /retry/{job_id}`: retry a completed or failed job
+- `GET /knowledge/stats`: inspect Chroma collection counts
+
+Example scan request:
+
+```bash
+curl -X POST http://localhost:8000/scan-repo \
+  -H "Content-Type: application/json" \
+  -d '{
+    "github_repository": "owner/repo",
+    "branch": "main",
+    "base_branch": "main",
+    "create_pr": false
+  }'
+```
 
 ## Knowledge Base
 
-The default ingestion paths include the two PDF files in this workspace:
+By default, the backend looks for the bundled PDFs below plus an optional `knowledge/` directory:
 
 - `Vurnabilities .pdf`
 - `Vurnabilities Solutions.pdf`
 
-Run manual ingestion:
+To rebuild the knowledge base manually:
 
 ```bash
 cd backend
 python -m vuln_swarm.rag.ingest --force
 ```
 
-## Safety Model
+## Security Notes
 
-Exploit execution is isolated in Docker with:
+- Repository analysis and validation run inside Docker with networking disabled by default
+- Validation containers use resource limits and `no-new-privileges`
+- PR automation only runs when `create_pr=true` and `GITHUB_TOKEN` is configured
+- Secret-related findings may still require rotation and history rewrite even after patching
 
-- read-only repository mount
-- `--network none`
-- CPU and memory limits
-- command timeout
-- no host Docker socket mount
+## Documentation
 
-Automated patching is intentionally conservative. Deterministic AST-aware fixers handle common Python vulnerabilities first; Groq structured patch planning is used for the remaining cases when enabled by `GROQ_API_KEY`.
+- [Architecture](docs/architecture.md)
+- [API examples](docs/api.md)
+- [Security model](docs/security_model.md)
