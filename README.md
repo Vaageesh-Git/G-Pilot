@@ -18,6 +18,10 @@ Vuln-Swarm is a full-stack, multi-agent security automation system that scans Gi
 - Docker-isolated exploit and validation steps with conservative defaults
 - GitHub webhook and PR automation for authorized repositories
 
+## Architecture 
+
+![alt text](image.png)
+
 ## Tech Stack
 
 - Backend: FastAPI, Pydantic v2, LangGraph, ChromaDB, `sentence-transformers`
